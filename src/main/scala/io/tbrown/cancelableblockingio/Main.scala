@@ -1,38 +1,14 @@
 package io.tbrown.cancelableblockingio
 
 import cats.implicits._
-import cats.effect._
+import cats.effect.implicits._
 import cats.effect.concurrent.Ref
-import io.chrisdavenport.linebacker.contexts.Executors
+import cats.effect._
 
-import scala.concurrent.ExecutionContext
+import io.chrisdavenport.linebacker.DualContext
 
-object Main extends IOApp {
-
-  def run(args: List[String]): IO[ExitCode] = {
-    def blah() = {
-      Thread.sleep(5000)
-      println("done")
-    }
-
-    Executors.unbound[IO].use { es =>
-      val ec = ExecutionContext.fromExecutorService(es)
-
-      for {
-        //fiber <- blocking[IO, Unit](blah())(ec).start
-        fiber <- blocking[IO, Unit](blah())(ec).start
-        _ <- IO(Thread.sleep(1000))
-//        _ <- fiber.join
-        _ <- IO(println("Past"))
-        _ <- fiber.cancel
-
-//        _ <- IO(println("We have fully canceled now"))
-//        _ <- fiber.join
-      } yield ExitCode.Success
-    }
-  }
-
-  final def blocking[F[_], A](effect: => A)(blockingEC: ExecutionContext)(implicit F: ConcurrentEffect[F], CS: ContextShift[F]): F[A] =
+object CancelableF {
+  final def blocking[F[_], A](effect: => A)(implicit F: ConcurrentEffect[F], DC: DualContext[F]): F[A] =
     F.suspend {
       import java.util.concurrent.locks.ReentrantLock
       import java.util.concurrent.atomic.AtomicReference
@@ -46,31 +22,25 @@ object Main extends IOApp {
         } finally lock.unlock()
 
       (for {
-          ref <- Ref[F].of(F.unit)
-          fiber = //ugly!
-            F.cancelable[A] { cb =>
-              F.toIO[Unit] {
-                F.start {
-                  CS.evalOn(blockingEC) {
-                    F.guarantee {
-                      F.delay {
-                        withLock(thread.set(Some(Thread.currentThread())))
+        ref <- Ref[F].of(F.unit)
+        fiber =
+        F.cancelable[A] { cb =>
+          DC.block {
+            F.delay {
+              withLock(thread.set(Some(Thread.currentThread())))
 
-                        try cb(Right[Throwable, A](effect))
-                        catch {
-                          case e: InterruptedException =>
-                            Thread.interrupted()
-                            cb(Left[Throwable, A](e))
-                        } finally withLock(thread.set(None))
-                      }
-                    }(ref.get.flatten)
-                  }
-                }.void
-              }.unsafeRunSync()
-
-              ref.get.flatten
+              try cb(Right[Throwable, A](effect))
+              catch {
+                case e: InterruptedException =>
+                  Thread.interrupted()
+                  cb(Left[Throwable, A](e))
+              } finally withLock(thread.set(None))
             }
-          _ <- ref.set(F.delay(withLock(thread.get.foreach(_.interrupt()))))
-        } yield fiber).flatten
+          }.guarantee(ref.get.flatten).start.void.toIO.unsafeRunSync()
+
+          ref.get.flatten
+        }
+        _ <- ref.set(F.delay(withLock(thread.get.foreach(_.interrupt()))))
+      } yield fiber).flatten
     }
-}
+  }
