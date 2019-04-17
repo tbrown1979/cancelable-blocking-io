@@ -7,6 +7,12 @@ import cats.effect._
 
 import io.chrisdavenport.linebacker.DualContext
 
+/*
+  This code was copied and modified from Scalaz-ZIO: https://github.com/scalaz/scalaz-zio
+  It was modified from this method: https://github.com/scalaz/scalaz-zio/blob/97ef17944b0126e25fa3b6b8926955b369570831/core/jvm/src/main/scala/scalaz/zio/blocking/Blocking.scala#L65
+  Credit goes to that project and the maintainers and contributors.
+*/
+
 object CancelableF {
   final def blocking[F[_], A](effect: => A)(implicit F: ConcurrentEffect[F], DC: DualContext[F]): F[A] =
     F.suspend {
